@@ -27,6 +27,7 @@ module XMonad.Hooks.DynamicLog (
     dzenWithFlags,
     xmobar,
     statusBar,
+    statusBar',
     dynamicLog,
     dynamicLogXinerama,
 
@@ -42,9 +43,9 @@ module XMonad.Hooks.DynamicLog (
     dzenPP, xmobarPP, sjanssenPP, byorgeyPP,
 
     -- * Formatting utilities
-    wrap, pad, trim, shorten,
-    xmobarColor, xmobarAction, xmobarRaw,
-    xmobarStrip, xmobarStripTags,
+    wrap, pad, trim, shorten, shortenLeft,
+    xmobarColor, xmobarAction, xmobarBorder,
+    xmobarRaw, xmobarStrip, xmobarStripTags,
     dzenColor, dzenEscape, dzenStrip,
 
     -- * Internal formatting functions
@@ -59,7 +60,8 @@ module XMonad.Hooks.DynamicLog (
 -- Useful imports
 
 import Codec.Binary.UTF8.String (encodeString)
-import Control.Monad (liftM2, msum)
+import Control.Applicative (liftA2)
+import Control.Monad (msum)
 import Data.Char ( isSpace, ord )
 import Data.List (intersperse, stripPrefix, isPrefixOf, sortBy)
 import Data.Maybe ( isJust, catMaybes, mapMaybe, fromMaybe )
@@ -222,14 +224,27 @@ statusBar :: LayoutClass l Window
                        -- ^ the desired key binding to toggle bar visibility
           -> XConfig l -- ^ the base config
           -> IO (XConfig (ModifiedLayout AvoidStruts l))
-statusBar cmd pp k conf = do
+statusBar cmd pp = statusBar' cmd (return pp)
+
+-- | Like 'statusBar' with the pretty printing options embedded in the
+-- X monad. The X PP value is re-executed every time the 'logHook' runs.
+-- Useful if printing options need to be modified dynamically.
+statusBar' :: LayoutClass l Window
+           => String       -- ^ the command line to launch the status bar
+           -> X PP         -- ^ the pretty printing options
+           -> (XConfig Layout -> (KeyMask, KeySym))
+                           -- ^ the desired key binding to toggle bar visibility
+           -> XConfig l    -- ^ the base config
+           -> IO (XConfig (ModifiedLayout AvoidStruts l))
+statusBar' cmd xpp k conf = do
     h <- spawnPipe cmd
     return $ docks $ conf
         { layoutHook = avoidStruts (layoutHook conf)
         , logHook = do
                         logHook conf
+                        pp <- xpp
                         dynamicLogWithPP pp { ppOutput = hPutStrLn h }
-        , keys       = liftM2 M.union keys' (keys conf)
+        , keys       = liftA2 M.union keys' (keys conf)
         }
  where
     keys' = (`M.singleton` sendMessage ToggleStruts) . k
@@ -321,7 +336,7 @@ pprWindowSet sort' urgents pp s = sepBy (ppWsSep pp) . map fmt . sort' $
           where printer | any (\x -> maybe False (== S.tag w) (S.findTag x s)) urgents  = ppUrgent
                         | S.tag w == this                                               = ppCurrent
                         | S.tag w `elem` visibles && isJust (S.stack w)                 = ppVisible
-                        | S.tag w `elem` visibles                                       = liftM2 fromMaybe ppVisible ppVisibleNoWindows
+                        | S.tag w `elem` visibles                                       = liftA2 fromMaybe ppVisible ppVisibleNoWindows
                         | isJust (S.stack w)                                            = ppHidden
                         | otherwise                                                     = ppHiddenNoWindows
 
@@ -375,6 +390,14 @@ shorten n xs | length xs < n = xs
              | otherwise     = take (n - length end) xs ++ end
  where
     end = "..."
+
+-- | Like 'shorten', but truncate from the left instead of right.
+shortenLeft :: Int -> String -> String
+shortenLeft n xs | l < n     = xs
+                 | otherwise = end ++ (drop (l - n + length end) xs)
+ where
+    end = "..."
+    l = length xs
 
 -- | Output a list of strings, ignoring empty ones and separating the
 --   rest with the given separator.
@@ -434,6 +457,18 @@ xmobarAction command button = wrap l r
     where
         l = "<action=`" ++ command ++ "` button=" ++ button ++ ">"
         r = "</action>"
+
+-- | Use xmobar box to add a border to an arbitrary string.
+xmobarBorder :: String -- ^ Border type. Possible values: VBoth, HBoth, Full,
+                       -- Top, Bottom, Left or Right
+             -> String -- ^ color: a color name, or #rrggbb format
+             -> Int    -- ^ width in pixels
+             -> String -- ^ output string
+             -> String
+xmobarBorder border color width = wrap prefix "</box>"
+  where
+    prefix = "<box type=" ++ border ++ " width=" ++ show width ++ " color="
+      ++ color ++ ">"
 
 -- | Encapsulate arbitrary text for display only, i.e. untrusted content if
 -- wrapped (perhaps from window titles) will be displayed only, with all tags
